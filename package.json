@@ -1,0 +1,33 @@
+{
+  "name": "automated-total-hours",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "dev:electron": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .\"",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "electron": "electron ."
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.4.530",
+    "preact": "^10.27.2",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/node": "^24.10.1",
+    "autoprefixer": "^10.4.23",
+    "chokidar": "^3.6.0",
+    "concurrently": "^9.2.0",
+    "cross-env": "^7.0.3",
+    "electron": "^37.2.5",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "wait-on": "^8.0.3"
+  }
+}
