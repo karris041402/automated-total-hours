@@ -23,7 +23,7 @@
     "chokidar": "^3.6.0",
     "concurrently": "^9.2.0",
     "cross-env": "^7.0.3",
-    "electron": "^37.2.5",
+    "electron": "^37.10.3",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.9.3",

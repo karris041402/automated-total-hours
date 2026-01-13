@@ -153,6 +153,19 @@ export function parseDtrFromTesseractWords(args: {
         }
       }
 
+      // token like "0759" then next token "AM"/"PM"
+      const mNoColon = t.match(/^(\d{1,2})(\d{2})$/);
+      if (mNoColon) {
+        const next = rowSorted[i + 1]?.text ?? "";
+        const ap = next.match(/^(A|P)\.?M?\.?$/i);
+        if (ap) {
+          times.push(normalizeTime(mNoColon[1], mNoColon[2], ap[1]));
+          i += 1; // consume next token
+          continue;
+        }
+      }
+
+
       // token like "10:52 PM"
       const m2 = t.match(timeTokenRe);
       if (m2) {
@@ -165,12 +178,23 @@ export function parseDtrFromTesseractWords(args: {
   }
 
   for (const row of clusters) {
-    // find a day number in day column
-    const dayWord = row.find((w) => w.x0 <= dayColMaxX && /^\d{1,2}$/.test(w.text));
-    if (!dayWord) continue;
+    // robust day detection (handles "1", "01", "1.", "1|", etc.)
+    const rowByX = [...row].sort((a, b) => a.x0 - b.x0);
 
-    const day = Number(dayWord.text);
-    if (day < 1 || day > 31) continue;
+    // only inspect the left-most few tokens
+    const dayCandidate = rowByX
+      .filter((w) => w.x0 <= dayColMaxX)
+      .slice(0, 5)
+      .map((w) => {
+        const digits = (w.text || "").replace(/\D/g, ""); // keep digits only
+        const n = digits ? Number(digits) : NaN;
+        return { n, raw: w.text };
+      })
+      .find((x) => Number.isFinite(x.n) && x.n >= 1 && x.n <= 31);
+
+    if (!dayCandidate) continue;
+    const day = dayCandidate.n;
+
 
     const times = collectTimesFromRow(row);
     if (!times.length) continue;

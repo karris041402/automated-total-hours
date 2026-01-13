@@ -9,6 +9,7 @@ import { computeTotalMinutes, formatHours } from "./utils/compute";
 import { pdfToPngDataUrls } from "./utils/pdfToImages";
 import { extractPdfText } from "./utils/pdfText";
 import ScheduleBuilder from "./components/ScheduleBuilder";
+import { pdfHasEmbeddedText } from "./utils/pdfHasText";
 
 // We force LEFT side processing for the Ricoh DTR (two tables side-by-side)
 const DEFAULT_SIDE = "left" as const;
@@ -220,11 +221,39 @@ export default function App() {
     try {
       setStatus(item.filePath, { status: "PROCESSING", note: undefined });
 
-      const f = await filePathToFile(item.filePath, item.fileName);
+      let processingPath = item.filePath;
+      let processingName = item.fileName;
 
+      // STEP 3: check kung image-only PDF
+      if (processingName.toLowerCase().endsWith(".pdf")) {
+        const originalFile = await filePathToFile(item.filePath, item.fileName);
+
+        const hasText = await pdfHasEmbeddedText(originalFile);
+
+        // 👉 IMAGE-ONLY → convert muna
+        if (!hasText) {
+          try {
+            const res = await (window as any).scanBridge?.makeSearchablePdf(
+              item.filePath
+            );
+
+            if (res?.ok && res.searchablePath) {
+              processingPath = res.searchablePath;
+              processingName = processingName.replace(
+                /\.pdf$/i,
+                "_searchable.pdf"
+              );
+            }
+          } catch {
+            // pag pumalya, fallback sa old OCR
+          }
+        }
+      }
+
+      // DITO na papasok ang EXISTING logic mo
+      const f = await filePathToFile(processingPath, processingName);
       if (fileUrl) URL.revokeObjectURL(fileUrl);
       setFileUrl(URL.createObjectURL(f));
-
       const parsed = await scanAndCompute(f);
 
       if (parsed && parsed.rows.length) {
@@ -240,9 +269,15 @@ export default function App() {
           totalMinutes: computed.totalMinutes,
         });
 
-        // ✅ delete the processed file
         try {
+          // delete original scan
           await (window as any).scanBridge?.deleteFile(item.filePath);
+
+          // delete searchable copy if created
+          if (processingPath !== item.filePath) {
+            await (window as any).scanBridge?.deleteFile(processingPath);
+          }
+
           removeFromQueue(item.filePath);
         } catch (e) {
           console.warn("Failed to delete processed file:", e);
@@ -305,11 +340,6 @@ export default function App() {
 
   function removeFromQueue(filePath: string) {
     setQueue((prev) => prev.filter((x) => x.filePath !== filePath));
-    setStatusMap((prev) => {
-      const next = { ...prev };
-      delete next[filePath];
-      return next;
-    });
   }
 
   // Start watcher + listen for new scans (Electron only)
@@ -436,7 +466,7 @@ export default function App() {
         f.type === "application/pdf" ||
         f.name.toLowerCase().endsWith(".pdf")
       ) {
-        pageImages = await pdfToPngDataUrls(f, 2.6, DEFAULT_SIDE); // 2.6 sharper for table
+        pageImages = await pdfToPngDataUrls(f, 2.6); // 2.6 sharper for table
         setFileUrl(pageImages[0] ?? null);
       } else {
         const url = URL.createObjectURL(f);
