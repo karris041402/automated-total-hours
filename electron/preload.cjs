@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('scanBridge', {
   stopWatcher: () => ipcRenderer.invoke('scan:stopWatcher'),
   readFile: (filePath) => ipcRenderer.invoke('scan:readFile', filePath),
   deleteFile: (filePath) => ipcRenderer.invoke("scan:deleteFile", filePath),
+  convertTiffToPng: (filePath) => ipcRenderer.invoke("scan:convertTiffToPng", filePath),
   makeSearchablePdf: (filePath) => ipcRenderer.invoke("scan:makeSearchablePdf", filePath),
   getDefaultFolder: () => ipcRenderer.invoke('scan:getDefaultFolder'),
   onFileDetected: (cb) => {

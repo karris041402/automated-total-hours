@@ -4,6 +4,8 @@ const fs = require("fs");
 const fs_pr = require("fs/promises");
 const chokidar = require("chokidar");
 const { spawn } = require("child_process");
+const sharp = require("sharp");
+
 
 let mainWindow;
 let watcher = null;
@@ -108,6 +110,13 @@ ipcMain.handle("scan:deleteFile", async (_e, filePath) => {
   await fs_pr.unlink(filePath);
   return { ok: true };
 });
+
+ipcMain.handle("scan:convertTiffToPng", async (_e, filePath) => {
+  const input = await fs_pr.readFile(filePath);
+  const png = await sharp(input).png().toBuffer();
+  return png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
+});
+
 
 
 /* =========================

@@ -8,10 +8,9 @@ import {
 import { computeTotalMinutes, formatHours } from "./utils/compute";
 import { pdfToPngDataUrls } from "./utils/pdfToImages";
 import { extractPdfText } from "./utils/pdfText";
+import { preprocessImageUrl } from "./utils/imagePreprocess";
 import ScheduleBuilder from "./components/ScheduleBuilder";
-import { pdfHasEmbeddedText } from "./utils/pdfHasText";
 
-// We force LEFT side processing for the Ricoh DTR (two tables side-by-side)
 const DEFAULT_SIDE = "left" as const;
 
 type QueueStatus =
@@ -34,18 +33,18 @@ type ScanQueueItem = {
 function monthToIndex(month: string) {
   const m = month.toUpperCase();
   const map: Record<string, number> = {
-    JANUARY: 0,
-    FEBRUARY: 1,
-    MARCH: 2,
-    APRIL: 3,
-    MAY: 4,
-    JUNE: 5,
-    JULY: 6,
-    AUGUST: 7,
-    SEPTEMBER: 8,
-    OCTOBER: 9,
-    NOVEMBER: 10,
-    DECEMBER: 11,
+    JANUARY: 0+1,
+    FEBRUARY: 1+1,
+    MARCH: 2+1,
+    APRIL: 3+1,
+    MAY: 4+1,
+    JUNE: 5+1,
+    JULY: 6+1,
+    AUGUST: 7+1,
+    SEPTEMBER: 8+1,
+    OCTOBER: 9+1,
+    NOVEMBER: 10+1,
+    DECEMBER: 11+1,
   };
   return map[m] ?? 0;
 }
@@ -200,6 +199,8 @@ export default function App() {
       ? "image/png"
       : lower.endsWith(".jpg") || lower.endsWith(".jpeg")
       ? "image/jpeg"
+      : lower.endsWith(".tif") || lower.endsWith(".tiff")
+      ? "image/tiff"
       : "application/octet-stream";
     return new File([buf], fileName, { type: mime });
   }
@@ -221,37 +222,8 @@ export default function App() {
     try {
       setStatus(item.filePath, { status: "PROCESSING", note: undefined });
 
-      let processingPath = item.filePath;
-      let processingName = item.fileName;
+      const f = await filePathToFileWithTiffSupport(item.filePath, item.fileName);
 
-      // STEP 3: check kung image-only PDF
-      if (processingName.toLowerCase().endsWith(".pdf")) {
-        const originalFile = await filePathToFile(item.filePath, item.fileName);
-
-        const hasText = await pdfHasEmbeddedText(originalFile);
-
-        // 👉 IMAGE-ONLY → convert muna
-        if (!hasText) {
-          try {
-            const res = await (window as any).scanBridge?.makeSearchablePdf(
-              item.filePath
-            );
-
-            if (res?.ok && res.searchablePath) {
-              processingPath = res.searchablePath;
-              processingName = processingName.replace(
-                /\.pdf$/i,
-                "_searchable.pdf"
-              );
-            }
-          } catch {
-            // pag pumalya, fallback sa old OCR
-          }
-        }
-      }
-
-      // DITO na papasok ang EXISTING logic mo
-      const f = await filePathToFile(processingPath, processingName);
       if (fileUrl) URL.revokeObjectURL(fileUrl);
       setFileUrl(URL.createObjectURL(f));
       const parsed = await scanAndCompute(f);
@@ -272,12 +244,6 @@ export default function App() {
         try {
           // delete original scan
           await (window as any).scanBridge?.deleteFile(item.filePath);
-
-          // delete searchable copy if created
-          if (processingPath !== item.filePath) {
-            await (window as any).scanBridge?.deleteFile(processingPath);
-          }
-
           removeFromQueue(item.filePath);
         } catch (e) {
           console.warn("Failed to delete processed file:", e);
@@ -291,7 +257,7 @@ export default function App() {
     } catch (e: any) {
       setStatus(item.filePath, {
         status: "FAILED",
-        note: e?.message ? String(e.message) : "Failed",
+        note: e?.message ? String(e.message) : String(e),
       });
     } finally {
       processingRef.current = false;
@@ -313,6 +279,22 @@ export default function App() {
       await processQueueItem({ ...it, status: "READY" });
     }
   }
+
+  async function filePathToFileWithTiffSupport(filePath: string, fileName: string): Promise<File> {
+    const lower = fileName.toLowerCase();
+
+    // If TIFF, convert using Electron main (sharp) -> PNG
+    if (lower.endsWith(".tif") || lower.endsWith(".tiff")) {
+      const pngBuf: ArrayBuffer = await (window as any).scanBridge.convertTiffToPng(filePath);
+      const blob = new Blob([pngBuf], { type: "image/png" });
+      const pngName = fileName.replace(/\.tiff?$/i, ".png");
+      return new File([blob], pngName, { type: "image/png" });
+    }
+
+    // Otherwise use your existing filePathToFile
+    return filePathToFile(filePath, fileName);
+  }
+
 
   async function restartWatcher() {
     if (!isElectron) return;
@@ -410,68 +392,81 @@ export default function App() {
     setExtracted(null);
     setRows([]);
     setProgress(0);
-
     setOcrLoading(true);
-    try {
-      // 0) FAST PATH (no OCR): extract text directly from the PDF.
-      // If the Ricoh PDF has an embedded text layer, this will read the TABLE perfectly.
-      // If we get enough time tokens, we skip Tesseract entirely.
-      if (
-        f.type === "application/pdf" ||
-        f.name.toLowerCase().endsWith(".pdf")
-      ) {
-        try {
-          const pdfText = await extractPdfText(f, DEFAULT_SIDE);
-          const timeTokenCount = (
-            pdfText.match(/\b\d{1,2}\s*[:.]\s*\d{2}\s*(?:AM|PM)\b/gi) || []
-          ).length;
 
-          if (timeTokenCount >= 6) {
+    try {
+      const isPdf =
+        f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+
+      // =========================
+      // A) FAST PATH: Embedded-text PDF
+      // =========================
+      if (isPdf) {
+        try {
+          const raw = await extractPdfText(f, DEFAULT_SIDE);
+          const rawTrim = (raw ?? "").trim();
+
+          // If we got ANY meaningful text, attempt parse
+          if (rawTrim.length > 20) {
             const parsedPdf = parseDtrFromPdfText({
-              text: pdfText,
+              text: rawTrim,
               year: curYear,
               monthIndex0: curMonthIndex0,
               allowedWeekdays: curAllowedWeekdays,
             });
 
-            const out: ExtractedDTR = {
-              employeeName: parsedPdf.employeeName,
-              monthLabel: parsedPdf.monthLabel,
-              rows: parsedPdf.rows,
-              rawText: parsedPdf.rawText,
-            };
-            setExtracted(out);
-            setRows(parsedPdf.rows);
 
-            // auto month/year if detected (e.g. "NOVEMBER / 2025")
-            if (parsedPdf.monthLabel) {
-              const parts = parsedPdf.monthLabel.split("/");
-              const mm = parts[0]?.trim() ?? "";
-              const yy = Number(parts[1]?.trim());
-              if (!Number.isNaN(yy)) setYear(yy);
-              setMonthIndex0(monthToIndex(mm));
+            // ✅ IMPORTANT: only accept this path if it REALLY produced rows
+            const hasRows = !!parsedPdf?.rows?.length;
+            const hasAnyTime =
+              parsedPdf?.rows?.some((r) => r.amIn && r.amOut) ?? false;
+
+
+            if (hasRows && hasAnyTime) {
+              const out: ExtractedDTR = {
+                employeeName: parsedPdf.employeeName,
+                monthLabel: parsedPdf.monthLabel,
+                rows: parsedPdf.rows,
+                rawText: parsedPdf.rawText,
+              };
+
+              setExtracted(out);
+              setRows(parsedPdf.rows);
+
+              // auto month/year if detected (e.g. "NOVEMBER / 2025")
+              if (parsedPdf.monthLabel) {
+                const parts = parsedPdf.monthLabel.split("/");
+                const mm = parts[0]?.trim() ?? "";
+                const yy = Number(parts[1]?.trim());
+                if (!Number.isNaN(yy)) setYear(yy);
+                setMonthIndex0(monthToIndex(mm));
+              }
+
+              setProgress(100);
+              return out;
             }
-
-            setProgress(100);
-            return out;
           }
-        } catch (e) {
-          // ignore and fall back to OCR
+          // If no text OR parse produced zero usable rows -> fall through to OCR
+        } catch {
+          // If PDF text extraction errors -> fall through to OCR
         }
       }
+
+      // =========================
+      // B) FALLBACK: OCR (works for image-only PDF + image files)
+      // =========================
       let pageImages: string[] = [];
 
-      // PDF -> images (cropped left/right)
-      if (
-        f.type === "application/pdf" ||
-        f.name.toLowerCase().endsWith(".pdf")
-      ) {
-        pageImages = await pdfToPngDataUrls(f, 2.6); // 2.6 sharper for table
+      if (isPdf) {
+        // PDF -> rendered PNG pages
+        pageImages = await pdfToPngDataUrls(f, 2.6);
         setFileUrl(pageImages[0] ?? null);
       } else {
+        // Image -> preprocess (TIFF already converted to PNG by Electron main)
         const url = URL.createObjectURL(f);
         setFileUrl(url);
-        pageImages = [url];
+        const pre = await preprocessImageUrl(url, 1.0, 180);
+        pageImages = [pre];
       }
 
       let combinedText = "";
@@ -481,16 +476,11 @@ export default function App() {
         const img = pageImages[i];
 
         const ocrOptions: any = {
-          // OCR tuning for grid tables / small fonts
-          tessedit_pageseg_mode: "6", // assume a uniform block of text
+          tessedit_pageseg_mode: "4",
           user_defined_dpi: "300",
           preserve_interword_spaces: "1",
-          tessedit_char_whitelist: "0123456789:APMapm. ",
           logger: (m: any) => {
-            if (
-              m.status === "recognizing text" &&
-              typeof m.progress === "number"
-            ) {
+            if (m.status === "recognizing text" && typeof m.progress === "number") {
               const base = (i / pageImages.length) * 100;
               const pageProg = m.progress * (100 / pageImages.length);
               setProgress(Math.round(base + pageProg));
@@ -500,11 +490,11 @@ export default function App() {
 
         const out = await (Tesseract as any).recognize(img, "eng", ocrOptions);
 
-        // Keep header/body text for name/month
-        combinedText += "\n" + (out.data.text || "");
+        combinedText += "\n" + (out?.data?.text ?? "");
 
-        // IMPORTANT: table is usually here, as WORD boxes
-        allWords = allWords.concat(((out as any).data.words as any[]) || []);
+        if (Array.isArray(out?.data?.words)) {
+          allWords = allWords.concat(out.data.words);
+        }
       }
 
       const parsed = parseDtrFromTesseractWords({
@@ -515,13 +505,15 @@ export default function App() {
         allowedWeekdays: curAllowedWeekdays,
       });
 
-      const out: ExtractedDTR = {
+
+      const finalOut: ExtractedDTR = {
         employeeName: parsed.employeeName,
         monthLabel: parsed.monthLabel,
         rows: parsed.rows,
-        rawText: parsed.rawText,
+        rawText: combinedText,
       };
-      setExtracted(out);
+
+      setExtracted(finalOut);
       setRows(parsed.rows);
 
       // auto month/year if OCR detected "DECEMBER / 2025"
@@ -533,11 +525,13 @@ export default function App() {
         setMonthIndex0(monthToIndex(mm));
       }
 
-      return out;
+      setProgress(100);
+      return finalOut;
     } finally {
       setOcrLoading(false);
     }
   }
+
 
   function updateRow(day: number, key: keyof DtrRow, value: string) {
     setRows((prev) =>
@@ -667,7 +661,7 @@ export default function App() {
         </div>
 
         {/* 2) Month/year */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-3">
+        <div className="hidden rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-3">
           <div className="font-medium">
             2) Set Month &amp; Year (for weekday matching)
           </div>
@@ -719,7 +713,7 @@ export default function App() {
 
         {/* 4) Extracted */}
         {extracted && (
-          <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-2">
+          <div className="hidden rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-2">
             <div className="font-medium">4) Extracted</div>
             <div className="text-sm text-slate-300 space-y-1">
               <div>
