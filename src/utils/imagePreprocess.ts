@@ -37,7 +37,7 @@ export async function preprocessImageUrl(
         reject(e);
       }
     };
-    img.onerror = (e) => reject(new Error("Image load error"));
+    img.onerror = () => reject(new Error("Image load error"));
     img.src = url;
   });
 }
